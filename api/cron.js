@@ -7,21 +7,8 @@ export default async function handler(req) {
       day: 'numeric', month: 'long', year: 'numeric'
     });
 
-    const prompt = `Aujourd'hui le ${today}, cherche sur internet les projets de design graphique, branding et identite visuelle les plus recents et remarquables publies ces derniers jours sur ces sites : underconsideration.com/brandnew, itsnicethat.com, eyemagazine.com, designobserver.com, fontsinuse.com, dezeen.com, slanted.de, etapes.com, mindsparklemag.com.
-
-Selectionne les 10 projets les plus interessants et retourne un tableau JSON avec exactement ces champs pour chacun :
-- title: nom du projet
-- studio: studio ou designer
-- client: le client ou la marque
-- source: nom du site (ex: "Brand New")
-- sourceUrl: l'URL directe de l'article
-- imageUrl: URL directe d'une image du projet (jpg/png/webp)
-- analysis: analyse critique en francais de 3-4 paragraphes
-- tags: tableau de 2-3 mots-cles
-
-Reponds UNIQUEMENT avec un tableau JSON valide de 10 objets. Aucun texte avant, aucun texte apres, aucun backtick.`;
-
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    // ETAPE 1 : recherche web en texte libre
+    const searchResponse = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -30,22 +17,93 @@ Reponds UNIQUEMENT avec un tableau JSON valide de 10 objets. Aucun texte avant, 
       body: JSON.stringify({
         model: 'gpt-4o-search-preview',
         web_search_options: {},
-        messages: [{ role: 'user', content: prompt }],
-        max_tokens: 4000
+        messages: [{
+          role: 'user',
+          content: `Aujourd'hui le ${today}. Cherche sur internet les 10 projets de design graphique, branding et identite visuelle les plus recents et interessants publies ces derniers jours sur ces sites : underconsideration.com/brandnew, itsnicethat.com, eyemagazine.com, designobserver.com, fontsinuse.com, dezeen.com, slanted.de, etapes.com, mindsparklemag.com.
+
+Pour chaque projet trouve, donne-moi en texte libre :
+- Le titre du projet
+- Le studio ou designer
+- Le client ou la marque
+- Le site source et l'URL de l'article
+- Une URL d'image directe si disponible
+- Une analyse critique en francais de 2-3 paragraphes
+
+Reponds en texte libre, pas de JSON.`
+        }],
+        max_tokens: 3000
       })
     });
 
-    if (!response.ok) {
-      const err = await response.json();
-      throw new Error(err.error?.message || 'Erreur OpenAI');
+    if (!searchResponse.ok) {
+      const err = await searchResponse.json();
+      throw new Error('Etape 1 failed: ' + (err.error?.message || searchResponse.status));
     }
 
-    const data = await response.json();
-    const content = data.choices[0]?.message?.content || '';
-    const jsonMatch = content.match(/\[[\s\S]*\]/);
-    if (!jsonMatch) throw new Error('Format JSON invalide: ' + content.substring(0, 300));
+    const searchData = await searchResponse.json();
+    const rawText = searchData.choices[0]?.message?.content || '';
+
+    if (!rawText || rawText.length < 100) {
+      throw new Error('Etape 1 returned empty content');
+    }
+
+    // ETAPE 2 : convertir le texte en JSON propre
+    const jsonResponse = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o',
+        messages: [
+          {
+            role: 'user',
+            content: `Voici une description de 10 projets de design graphique :
+
+${rawText}
+
+Convertis ces informations en un tableau JSON valide de 10 objets. Chaque objet doit avoir exactement ces champs :
+- "title": string
+- "studio": string  
+- "client": string (vide si non mentionne)
+- "source": string (nom du site, ex: "Brand New")
+- "sourceUrl": string (URL de l'article)
+- "imageUrl": string (URL image, ou "https://images.unsplash.com/photo-1558618666-fcd25c85cd64?w=800&q=85" si pas d'image)
+- "analysis": string (analyse en francais, utilise uniquement des apostrophes simples a l'interieur, jamais de guillemets doubles)
+- "tags": array de 2-3 strings
+
+Reponds UNIQUEMENT avec le tableau JSON. Aucun texte avant ou apres. Aucun backtick. Aucun markdown.`
+          }
+        ],
+        max_tokens: 3000,
+        temperature: 0.2
+      })
+    });
+
+    if (!jsonResponse.ok) {
+      const err = await jsonResponse.json();
+      throw new Error('Etape 2 failed: ' + (err.error?.message || jsonResponse.status));
+    }
+
+    const jsonData = await jsonResponse.json();
+    let jsonContent = jsonData.choices[0]?.message?.content || '';
+
+    // Nettoyage defensif
+    jsonContent = jsonContent
+      .replace(/```json/gi, '')
+      .replace(/```/g, '')
+      .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
+      .trim();
+
+    const jsonMatch = jsonContent.match(/\[[\s\S]*\]/);
+    if (!jsonMatch) throw new Error('Pas de JSON valide trouve dans etape 2');
 
     const projects = JSON.parse(jsonMatch[0]);
+    if (!Array.isArray(projects) || projects.length === 0) {
+      throw new Error('JSON parse OK mais tableau vide');
+    }
+
     const dateKey = new Date().toISOString().split('T')[0];
 
     await kvSet(`feed:${dateKey}`, JSON.stringify(projects));
