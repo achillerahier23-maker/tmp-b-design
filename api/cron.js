@@ -1,37 +1,25 @@
 // api/cron.js
 export const config = { runtime: 'edge' };
 
-const SOURCES = [
-  'Brand New (underconsideration.com)',
-  "It's Nice That (itsnicethat.com)",
-  'Eye Magazine (eyemagazine.com)',
-  'Design Observer (designobserver.com)',
-  'Fonts In Use (fontsinuse.com)',
-  'Dezeen (dezeen.com)',
-  'Slanted (slanted.de)',
-  'Etapes (etapes.com)',
-  'Mindsparkle Mag (mindsparklemag.com)'
-];
-
 export default async function handler(req) {
   try {
     const today = new Date().toLocaleDateString('fr-FR', {
       day: 'numeric', month: 'long', year: 'numeric'
     });
 
-    const prompt = `Tu es un expert en design graphique et identite visuelle. Aujourd'hui le ${today}, genere une selection de 10 projets de design graphique, branding et identite visuelle recents et remarquables publies sur ces sources : ${SOURCES.join(', ')}.
+    const prompt = `Aujourd'hui le ${today}, cherche sur internet les projets de design graphique, branding et identite visuelle les plus recents et remarquables publies ces derniers jours sur ces sites : underconsideration.com/brandnew, itsnicethat.com, eyemagazine.com, designobserver.com, fontsinuse.com, dezeen.com, slanted.de, etapes.com, mindsparklemag.com.
 
-Pour chaque projet retourne un objet JSON avec exactement ces champs :
+Selectionne les 10 projets les plus interessants et retourne un tableau JSON avec exactement ces champs pour chacun :
 - title: nom du projet
-- studio: studio ou designer responsable
+- studio: studio ou designer
 - client: le client ou la marque
-- source: le site de publication (ex: "Brand New")
-- sourceUrl: l'URL de l'article
-- imageUrl: une URL d'image directe et accessible (jpg/png/webp) representant le projet
+- source: nom du site (ex: "Brand New")
+- sourceUrl: l'URL directe de l'article
+- imageUrl: URL directe d'une image du projet (jpg/png/webp)
 - analysis: analyse critique en francais de 3-4 paragraphes
 - tags: tableau de 2-3 mots-cles
 
-Reponds UNIQUEMENT avec un tableau JSON valide de 10 objets. Pas de texte avant, pas de texte apres, pas de backticks.`;
+Reponds UNIQUEMENT avec un tableau JSON valide de 10 objets. Aucun texte avant, aucun texte apres, aucun backtick.`;
 
     const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
@@ -40,10 +28,10 @@ Reponds UNIQUEMENT avec un tableau JSON valide de 10 objets. Pas de texte avant,
         'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`
       },
       body: JSON.stringify({
-        model: 'gpt-4o',
+        model: 'gpt-4o-search-preview',
+        web_search_options: {},
         messages: [{ role: 'user', content: prompt }],
-        max_tokens: 4000,
-        temperature: 0.8
+        max_tokens: 4000
       })
     });
 
@@ -55,7 +43,7 @@ Reponds UNIQUEMENT avec un tableau JSON valide de 10 objets. Pas de texte avant,
     const data = await response.json();
     const content = data.choices[0]?.message?.content || '';
     const jsonMatch = content.match(/\[[\s\S]*\]/);
-    if (!jsonMatch) throw new Error('Format JSON invalide: ' + content.substring(0, 200));
+    if (!jsonMatch) throw new Error('Format JSON invalide: ' + content.substring(0, 300));
 
     const projects = JSON.parse(jsonMatch[0]);
     const dateKey = new Date().toISOString().split('T')[0];
@@ -93,10 +81,7 @@ async function kvSet(key, value) {
     },
     body: JSON.stringify([value])
   });
-  if (!res.ok) {
-    const txt = await res.text();
-    throw new Error(`KV set failed: ${txt}`);
-  }
+  if (!res.ok) throw new Error(`KV set failed: ${await res.text()}`);
   return res.json();
 }
 
